@@ -11,8 +11,10 @@
      GLM_KEY     (اختیاری) کلید GLM-4 از open.bigmodel.cn
      MAX_POSTS   (اختیاری) حداکثر ارسال در هر اجرا (پیشفرض ۶)
      MAX_AGE_H   (اختیاری) حداکثر عمر خبر (پیشفرض ۳۶ ساعت)
-   اجرا:  node bot.js          → عادی (ارسال واقعی + ذخیرهٔ state)
-          node bot.js --dry    → آزمایشی (فقط چاپ، بدون ارسال/ذخیره)
+   اجرا:  node bot.js            → عادی (ارسال واقعی + ذخیرهٔ state)
+          node bot.js --dry      → آزمایشی (فقط چاپ، بدون ارسال/ذخیره)
+          node bot.js --discover → بررسی چت‌های ربات و پیدا کردن شناسهٔ درست
+          node bot.js --merge-state → حل تعارض state.json (داخل workflow)
    ================================================================ */
 "use strict";
 const fs = require("fs");
@@ -309,7 +311,7 @@ async function translateText(text) {
 /* ================================================================
    زنجیرهٔ هوش مصنوعی — ۱) جمینی (کلید Secrets) → ۲) GLM-4 → ۳) رایگان
    ================================================================ */
-const GEMINI_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3-flash", "gemini-2.5-flash", "gemini-2.0-flash"];
+const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.0-flash"];
 const GLM_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 
 async function geminiText(system, userText) {
@@ -320,30 +322,36 @@ async function geminiText(system, userText) {
       contents: [{ role: "user", parts: [{ text: userText }] }],
       generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
     };
-    if (model.includes("2.5")) body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    // خاموش‌کردن «تفکر» در مدل‌های ۲.۵ → پاسخ سریع، بدون تایم‌اوت
+    if (/2\.5|flash-latest|lite-latest/.test(model)) body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
     if (system) body.systemInstruction = { parts: [{ text: system }] };
     const url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent";
     const payload = JSON.stringify(body);
-    let req;
-    if (GEMINI_KEY.startsWith("AQ.")) {
-      // کلیدهای جدید AI Studio با هدر x-goog-api-key کار می‌کنند
-      req = () => fetchT(url, { method: "POST", headers: { "x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json" }, body: payload }, 45000);
-    } else {
-      req = () => fetchT(url + "?key=" + encodeURIComponent(GEMINI_KEY), { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }, 45000);
-    }
-    let res = await req();
-    if ((res.status === 401 || res.status === 403) && GEMINI_KEY.startsWith("AQ.")) {
-      res = await fetchT(url, { method: "POST", headers: { "Authorization": "Bearer " + GEMINI_KEY, "Content-Type": "application/json" }, body: payload }, 45000);
+    let res;
+    try {
+      if (GEMINI_KEY.startsWith("AQ.")) {
+        // کلیدهای جدید AI Studio با هدر x-goog-api-key کار می‌کنند
+        res = await fetchT(url, { method: "POST", headers: { "x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json" }, body: payload }, 90000);
+        if (res.status === 401 || res.status === 403) {
+          res = await fetchT(url, { method: "POST", headers: { "Authorization": "Bearer " + GEMINI_KEY, "Content-Type": "application/json" }, body: payload }, 90000);
+        }
+      } else {
+        res = await fetchT(url + "?key=" + encodeURIComponent(GEMINI_KEY), { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }, 90000);
+      }
+    } catch (e) {
+      // تایم‌اوت/قطع شبکه → بقیهٔ مدل‌ها هم از همین مسیر می‌روند؛ ادامه دادن بی‌معناست
+      throw new Error("اتصال به جمینی برقرار نشد (" + (e.message || e) + ")");
     }
     if (res.status !== 200) {
-      lastErr = Object.assign(new Error("HTTP " + res.status), { status: res.status });
-      if ([400, 401, 403, 429].includes(res.status)) throw lastErr;
-      continue; // خطای 5xx → مدل بعدی
+      lastErr = Object.assign(new Error("HTTP " + res.status + " (" + model + ")"), { status: res.status });
+      // ۴۰۱/۴۰۳ یعنی کلید خراب، ۴۲۹ یعنی سهمیه تمام — مدل بعدی هم به درد نمی‌خورد
+      if ([401, 403, 429].includes(res.status)) throw lastErr;
+      continue; // ۴۰۰/۵xx مخصوص همین مدل → مدل بعدی
     }
     const data = JSON.parse(await res.text());
     const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
     const text = parts ? parts.map(p => p.text || "").join("") : "";
-    if (!text) { lastErr = new Error("پاسخ خالی جمینی"); continue; }
+    if (!text) { lastErr = new Error("پاسخ خالی جمینی (" + model + ")"); continue; }
     return text;
   }
   throw lastErr || new Error("جمینی پاسخ نداد");
@@ -442,7 +450,8 @@ async function baleSendOne(chat, it) {
   for (const fn of attempts) {
     try { return await fn(); } catch (e) {
       lastErr = e;
-      if (/chat not found|bot was blocked/i.test(e.message || "")) throw e;
+      // این خطاها با تلاش دوباره هم درست نمی‌شوند → همان اول پرتاب کن
+      if (/chat not found|bot was blocked|403|permission_denied|forbidden|not a member/i.test(e.message || "")) throw e;
     }
   }
   throw lastErr;
@@ -466,9 +475,72 @@ function saveState(st) {
 }
 
 /* ================================================================
+   حالت‌های کمکی workflow
+   ================================================================ */
+// node bot.js --merge-state : هنگام تعارض state.json در workflow، اتحاد دو نسخهٔ محلی و ریموت را می‌سازد
+if (process.argv.includes("--merge-state")) {
+  try {
+    const { execSync } = require("child_process");
+    const gitShow = (n) => { try { return JSON.parse(execSync("git show :" + n + ":state.json", { stdio: ["ignore", "pipe", "ignore"] }).toString()); } catch (e) { return null; } };
+    let cur = null;
+    try { cur = JSON.parse(fs.readFileSync("state.json", "utf8")); } catch (e) { cur = null; } // فایل تعارض‌دار → نامعتبر
+    const ours = gitShow(2), theirs = gitShow(3);
+    if (!ours && !theirs) console.log("state: تعارضی وجود ندارد");
+    else {
+      const merged = { sent: {}, totalSent: 0, lastRun: 0 };
+      for (const s of [theirs, ours, cur]) { // نسخهٔ همین اجرا آخرین اولویت را دارد
+        if (!s || !s.sent) continue;
+        for (const k of Object.keys(s.sent)) merged.sent[k] = s.sent[k];
+        merged.totalSent = Math.max(merged.totalSent, s.totalSent || 0);
+        merged.lastRun = Math.max(merged.lastRun, s.lastRun || 0);
+      }
+      fs.writeFileSync("state.json", JSON.stringify(merged, null, 1));
+      console.log("✓ تعارض state.json حل شد — اتحاد " + Object.keys(merged.sent).length + " شناسه");
+    }
+  } catch (e) { console.log("merge-state: " + (e.message || e)); }
+  process.exit(0);
+}
+
+// node bot.js --discover : چه چت‌هایی با ربات در ارتباط‌اند؟ شناسه‌های درست را نشان بده
+if (process.argv.includes("--discover")) {
+  (async () => {
+    if (!BALE_TOKEN) { console.error("✕ متغیر BALE_TOKEN تنظیم نشده — در Settings → Secrets اضافه کن"); process.exit(1); }
+    console.log("🔍 بررسی پیام‌های اخیر ربات (getUpdates)…");
+    let data = null, status = 0;
+    try {
+      const res = await fetchT("https://tapi.bale.ai/bot" + BALE_TOKEN + "/getUpdates", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: 100 })
+      }, 30000);
+      status = res.status;
+      data = await res.json().catch(() => null);
+    } catch (e) { console.log("✕ اتصال به بله نشد: " + (e.message || e)); process.exit(1); }
+    if (status === 409) { console.log("⚠ سرویس دیگری (اپ گوشی) همین حالا در حال دریافت آپدیت است — ۵ دقیقه بعد دوباره اجرا کن"); process.exit(0); }
+    if (!data || !data.ok) { console.log("✕ بله " + status + ": " + ((data && data.description) || "خطای نامشخص")); process.exit(0); }
+    const chats = {};
+    for (const u of (data.result || [])) {
+      const m = u.message || u.channel_post || u.edited_message || u.edited_channel_post;
+      if (m && m.chat) chats[m.chat.id] = m.chat;
+    }
+    const list = Object.values(chats);
+    if (!list.length) {
+      console.log("هیچ چتی پیدا نشد.");
+      console.log("۱) در بله به @aiautonewsbot یک پیام بفرست (هر متنی) و discover را دوباره اجرا کن؛");
+      console.log("۲) یا ربات را «مدیر» کانال کن و بعد discover را اجرا کن.");
+      process.exit(0);
+    }
+    console.log("چت‌هایی که با ربات در ارتباط‌اند:");
+    for (const c of list) console.log("  • شناسه: " + c.id + " | نوع: " + (c.type || "?") + " | نام: " + (c.title || c.username || c.first_name || "—"));
+    console.log("\n→ یکی از شناسه‌های بالا (یا چندتا با کاما) را در Secret با نام BALE_CHATS بگذار.");
+    console.log("→ یادآوری: برای ارسال به کانال، @aiautonewsbot باید مدیرِ کانال با اجازهٔ ارسال پیام باشد.");
+    process.exit(0);
+  })().catch(e => { console.error("✕ discover: " + (e.message || e)); process.exit(1); });
+}
+
+/* ================================================================
    اجرای اصلی
    ================================================================ */
 (async () => {
+  if (process.argv.includes("--discover")) return; // در حالت discover بالا اجرا شد
   const t0 = Date.now();
   console.log("🚀 پالس هوش مصنوعی — ربات ابری بله" + (DRY ? " (حالت آزمایشی — بدون ارسال)" : ""));
   if (!DRY && !BALE_TOKEN) { console.error("✕ متغیر BALE_TOKEN تنظیم نشده — در Settings → Secrets اضافه کن"); process.exit(1); }
@@ -502,7 +574,7 @@ function saveState(st) {
   console.log("🆕 خبرهای جدید: " + pending.length + " — ارسال این دوره: " + batch.length);
 
   // ۲) ساخت پست حرفه‌ای + ترجمهٔ عنوان + ارسال
-  let sent = 0;
+  let sent = 0, baleHint = false;
   for (const it of batch) {
     try {
       it.titleFa = await translateText(it.title);
@@ -525,7 +597,16 @@ function saveState(st) {
         let ok = false;
         for (const chat of BALE_CHATS) {
           try { await baleSendOne(chat, it); ok = true; console.log("✓ ارسال شد → " + chat); }
-          catch (e) { console.log("✕ ارسال به " + chat + " نشد: " + (e.message || e)); }
+          catch (e) {
+            console.log("✕ ارسال به " + chat + " نشد: " + (e.message || e));
+            if (!baleHint && /403|permission_denied|forbidden|chat not found|bot was blocked|not a member/i.test(e.message || "")) {
+              baleHint = true;
+              console.log("💡 ربات به این چت دسترسی ندارد. راه‌حل:");
+              console.log("   • کانال: @aiautonewsbot را «مدیر» کانال کن (با اجازهٔ ارسال پیام)");
+              console.log("   • چت خصوصی: اول در بله به ربات یک پیام بده (استارت)");
+              console.log("   • شناسهٔ درست را نمی‌دانی؟ تب Actions → Run workflow → Mode = discover");
+            }
+          }
         }
         if (ok) { st.sent[it.id] = Date.now(); st.totalSent = (st.totalSent || 0) + 1; sent++; }
         else console.log("↩ در دورهٔ بعد دوباره تلاش می‌شود");
