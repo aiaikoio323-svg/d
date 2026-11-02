@@ -1,7 +1,6 @@
-
 name: AI Pulse → Bale
 
-# هر ۳۰ دقیقه: آخرین اخبار AI → پست حرفه‌ای فارسی → ربات بله
+# هر ۳۰ دقیقه: اخبار AI + توییتر افراد معروف → لب کلام فارسی → ربات بله
 on:
   schedule:
     - cron: "*/30 * * * *"   # UTC — یعنی حدوداً هر نیم ساعت
@@ -23,7 +22,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +38,8 @@ jobs:
           GLM_KEY: ${{ secrets.GLM_KEY }}
           MAX_POSTS: ${{ vars.MAX_POSTS }}
           MAX_AGE_H: ${{ vars.MAX_AGE_H }}
+          TWITTER_ACCOUNTS: ${{ vars.TWITTER_ACCOUNTS }}
+          TRUTH_ACCOUNTS: ${{ vars.TRUTH_ACCOUNTS }}
         run: node bot.js ${{ inputs.mode == 'discover' && '--discover' || '' }}
 
       # در حالت discover نیازی به ذخیرهٔ state نیست
