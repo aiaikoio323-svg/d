@@ -1,12 +1,14 @@
 {
   "name": "aipulse-cloud-bot",
-  "version": "1.0.0",
+  "version": "4.0.0",
   "private": true,
-  "description": "AI Pulse - Cloud Bale news bot (Persian expert channel posts)",
+  "description": "AI Pulse v4.0 - Cloud Bale news bot (34 sources + Twitter/Truth, منبع + لب کلام + لینک format)",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dry": "node bot.js --dry"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }
