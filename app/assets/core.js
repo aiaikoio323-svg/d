@@ -234,7 +234,7 @@ function translateQueue(items, delayMs) {
 
 /* ---------- gemini (default key embedded + dual-auth) ---------- */
 var DEFAULT_KEY = ""; // ⚠️ کلید پیشفرض در نسخهٔ پابلیک حذف شده — کلید رایگان خودت را از aistudio.google.com/apikey در تب «دستیار» وارد کن
-var GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
+var GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
 
 function resolveKey() { return (state.key || "").trim() || DEFAULT_KEY; }
 function usingDefaultKey() { return !(state.key || "").trim(); }

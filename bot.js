@@ -543,7 +543,8 @@ async function translateText(text) {
 /* ================================================================
    زنجیرهٔ هوش مصنوعی — ۱) جمینی (کلید Secrets) → ۲) GLM-4 → ۳) رایگان
    ================================================================ */
-const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.0-flash"];
+/* مدل‌های فعلی جمینی (نوامبر ۲۰۲۶) — نام‌های قدیمی 2.5/2.0 بازنشسته شده‌اند */
+const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const GLM_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 
 async function geminiText(system, userText) {
@@ -556,7 +557,8 @@ async function geminiText(system, userText) {
       contents: [{ role: "user", parts: [{ text: userText }] }],
       generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
     };
-    if (/2\.5|latest/.test(model)) body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    if (/^gemini-2\.5/.test(model)) body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    else body.generationConfig.maxOutputTokens = 8192; // مدل‌های ۳.x: جا برای فکر کردن
     if (system) body.systemInstruction = { parts: [{ text: system }] };
     const url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent";
     const payload = JSON.stringify(body);
