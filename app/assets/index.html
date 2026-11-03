@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>پالس هوش مصنوعی</title>
+<link rel="stylesheet" href="fonts.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">
+      <div class="logo">پ</div>
+      <div>
+        <h1>پالس هوش مصنوعی</h1>
+        <p id="topsub">اخبار AI به زبان ساده</p>
+      </div>
+    </div>
+    <div class="topbtns">
+      <button id="btnTheme" class="iconbtn" aria-label="تغییر تم">◐</button>
+      <button id="btnAbout" class="iconbtn" aria-label="منابع">ⓘ</button>
+    </div>
+  </header>
+
+  <div id="refreshbar" class="hidden">
+    <div class="refreshmsg"><span id="refreshmsg">در حال دریافت تازه‌ها…</span></div>
+    <div class="pbar"><div id="pfill"></div></div>
+  </div>
+
+  <nav id="tabs"></nav>
+  <div id="chips" class="hidden"></div>
+
+  <main id="list"></main>
+
+  <nav id="bottomnav"></nav>
+</div>
+
+<div id="sheetwrap" class="hidden">
+  <div id="sheetback"></div>
+  <div id="sheet"></div>
+</div>
+
+<button id="fab" data-act="openwidget" aria-label="دستیار هوشمند">🤖<span class="fabping"></span></button>
+
+<div id="toast" class="hidden"></div>
+
+<script src="data.js"></script>
+<script src="core.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>
