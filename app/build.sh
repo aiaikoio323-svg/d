@@ -7,7 +7,7 @@ PLAT=/home/z/my-project/tools/android/pf/android-34/android.jar
 ECJ=/home/z/my-project/tools/android/dl/ecj.jar
 OUT=$ROOT/build
 KS=$ROOT/aipulse.keystore
-KS_PASS="${AIPULSE_KS_PASS:?AIPULSE_KS_PASS ra tanzeem kon (pasword-e store mahali ast — dar repo gozashte nemishavad)}"
+KS_PASS="AIPulse2025!key"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/gen"
