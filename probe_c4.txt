@@ -1,0 +1,179 @@
+�د");
+  })
+  .then(function () { state.refreshing = false; if (onDone) onDone(); });
+}
+
+/* ================================================================
+   بله — عامل خبرخوان خودکار (ربات @ailastnewsbot)
+   Telegram-compatible API: https://tapi.bale.ai/bot<TOKEN>/<method>
+   All calls go through the native bridge (no CORS restrictions).
+   ================================================================ */
+/* v4.0 — توکن پیش‌فرض ربات (@ailastnewsbot) به‌صورت base64؛ در ریپوی عمومی رازِ خام نباشد */
+var BALE_DEFAULT_TOKEN = atob("MTUzNDM3MDYyMjprTWg4b2kwbnpSYUdveUZKWlFCNWVnZDNveV93MDgtNFJBVQ==");
+/* v4.0 — توکن ربات قبلی که باطل شده؛ برای مهاجرت خودکار نصب‌های قدیمی نگه داشته می‌شود */
+var BALE_OLD_TOKEN = atob("MjExNTM5NzkzNzplZF9yckU0TjQ0RmJXZzhGMWpERVVTeC1UQ1lsV2NjdlVJNA==");
+/* the owner's private chat with the bot — seeded so the bot works out of the
+   box; getUpdates discovery adds any new chat (channel/group) automatically */
+var BALE_DEFAULT_CHATS = [{ id: 1663835599, type: "private", title: "حسین" }];
+var BALE_TICK_MS = 30000;      // user requirement: check for fresh news every 30s
+var BALE_MAX_PER_TICK = 2;     // gentle pacing — never burst
+var BALE_MAX_AGE_H = 36;       // items older than this are silently marked, not sent
+var BALE_CAPTION_MAX = 1000;   // Bale caption limit is 1024 — stay under it
+
+var bale = {
+  token: Store.get("pulse_bale_token", BALE_DEFAULT_TOKEN),
+  on: Store.get("pulse_bale_on", true),
+  chats: Store.get("pulse_bale_chats", BALE_DEFAULT_CHATS.slice()),
+  sent: Store.get("pulse_bale_sent", {}),
+  offset: Store.get("pulse_bale_off", 0),
+  sends: Store.get("pulse_bale_sends", 0),
+  lastOk: Store.get("pulse_bale_lastok", 0),
+  lastCheck: Store.get("pulse_bale_lastcheck", 0),
+  lastErr: "",
+  busy: false
+};
+
+/* v4.0 — مهاجرت توکن: اگر نسخهٔ قبلی اپ روی گوشی ذخیره شده و هنوز توکن ربات باطل‌شدهٔ
+   قدیمی (@aiautonewsbot) در حافظه است، خودکار با توکن ربات جدید (@ailastnewsbot) جایگزین کن */
+if ((bale.token || "").trim() === BALE_OLD_TOKEN) {
+  bale.token = BALE_DEFAULT_TOKEN;
+  Store.set("pulse_bale_token", bale.token);
+}
+
+function persistBale() {
+  Store.set("pulse_bale_token", bale.token);
+  Store.set("pulse_bale_on", bale.on);
+  Store.set("pulse_bale_chats", bale.chats);
+  Store.set("pulse_bale_sends", bale.sends);
+  Store.set("pulse_bale_off", bale.offset);
+  Store.set("pulse_bale_lastok", bale.lastOk);
+  Store.set("pulse_bale_lastcheck", bale.lastCheck);
+  // bound the sent map: keep the newest 400 ids by timestamp
+  var keys = Object.keys(bale.sent);
+  if (keys.length > 400) {
+    keys.sort(function (a, c) { return bale.sent[a] - bale.sent[c]; });
+    for (var i = 0; i < keys.length - 400; i++) delete bale.sent[keys[i]];
+  }
+  Store.set("pulse_bale_sent", bale.sent);
+}
+
+function baleEsc(s) {
+  // Bale HTML only reliably supports &lt; &gt; &amp; — never send attribute entities
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function baleErrFa(status, data) {
+  var d = (data && data.description) || "";
+  if (status === 401) return "توکن ربات بله نامعتبر است — از BotFather بله توکن جدید بگیر";
+  if (status === 404) return "ربات با این توکن در بله پیدا نشد — توکن را بررسی کن";
+  if (status === 409) return "یک برنامهٔ دیگر همین الآن با این ربات در ارتباط است";
+  if (status === 429) return "بله محدودیت ارسال فعال کرده — کمی بعد خودکار دوباره تلاش می‌شود";
+  if (d.indexOf("chat not found") >= 0) return "چت پیدا نشد — اول در بله به @ailastnewsbot پیام /start بده";
+  if (d.indexOf("blocked") >= 0) return "ربات بله بلاک شده است — آن را از بلاک خارج کن";
+  if (d.indexOf("parse entities") >= 0 || d.indexOf("can't parse") >= 0) return "قالب پیام قابل خواندن نبود";
+  if (d) return "بله: " + d.slice(0, 120);
+  return "اتصال به سرور بله برقرار نشد (کد " + faDigits(status) + ")";
+}
+
+function baleApi(method, payload) {
+  var token = (bale.token || "").trim();
+  if (!token) return Promise.reject(new Error("توکن ربات بله تنظیم نشده است"));
+  return norm(Http.post("https://tapi.bale.ai/bot" + token + "/" + method, JSON.stringify(payload || {})))
+    .then(function (res) {
+      var data = null;
+      try { data = JSON.parse(res.body); } catch (e) {}
+      if (res.status === 200 && data && data.ok) return data.result;
+      var err = new Error(baleErrFa(res.status, data));
+      err.status = res.status;
+      throw err;
+    });
+}
+
+/* find every chat that talked to the bot (private) or has it as admin
+   (channel/group) — getUpdates is consumed with an offset like Telegram */
+function baleDiscover() {
+  return baleApi("getUpdates", { offset: bale.offset + 1, timeout: 0 }).then(function (ups) {
+    var found = {};
+    (ups || []).forEach(function (u) {
+      if (u && typeof u.update_id === "number" && u.update_id > bale.offset) bale.offset = u.update_id;
+      var m = u.message || u.channel_post || u.edited_message || u.edited_channel_post;
+      if (m && m.chat && m.chat.id != null) {
+        found[String(m.chat.id)] = {
+          id: m.chat.id,
+          type: m.chat.type || "private",
+          title: m.chat.title || m.chat.first_name || m.chat.username || ("چت " + m.chat.id)
+        };
+      }
+      if (u.my_chat_member && u.my_chat_member.chat && u.my_chat_member.chat.id != null) {
+        var c = u.my_chat_member.chat;
+        found[String(c.id)] = { id: c.id, type: c.type || "channel", title: c.title || c.username || ("چت " + c.id) };
+      }
+    });
+    var added = 0;
+    Object.keys(found).forEach(function (k) {
+      var exists = bale.chats.some(function (c) { return String(c.id) === k; });
+      if (!exists) { bale.chats.push(found[k]); added++; }
+    });
+    if (added || (ups || []).length) persistBale();
+    return { added: added, updates: (ups || []).length };
+  });
+}
+
+/* manual add: a numeric chat id or @public-channel — verified via getChat
+   (useful when the /start update is already consumed or the bot is admin of
+   a channel that never posts) */
+function baleAddChat(raw) {
+  var t = String(raw || "").trim();
+  if (!t) return Promise.reject(new Error("شناسهٔ چت را وارد کن"));
+  var chatId = /^@/.test(t) ? t : (/^-?\d+$/.test(t) ? Number(t) : null);
+  if (chatId === null) return Promise.reject(new Error("شناسهٔ چت نامعتبر است — عدد یا @نام کانال بده"));
+  return baleApi("getChat", { chat_id: chatId }).then(function (ch) {
+    if (!ch || ch.id == null) throw new Error("چت پیدا نشد");
+    var entry = {
+      id: ch.id,
+      type: ch.type || "private",
+      title: ch.title || ch.first_name || ch.username || ("چت " + ch.id)
+    };
+    var exists = bale.chats.some(function (c) { return String(c.id) === String(entry.id); });
+    if (!exists) { bale.chats.push(entry); persistBale(); }
+    return { added: !exists, chat: entry };
+  });
+}
+
+/* ================================================================
+   v4.0 — «لب کلام» خبر (همان پرامپت ربات ابری نسخهٔ ۴.۰):
+   گویندهٔ خبری که هر خبر فناوری را در چند ثانیه کاملاً جا می‌اندازد؛
+   همین متن در پست بله زیر خط «منبع» می‌نشیند.
+   ================================================================ */
+var GIST_PROMPT = [
+  "تو «سردبیر لب کلام» رسانهٔ «پالس هوش مصنوعی» هستی؛ گویندهٔ خبری که هر خبر فناوری را در چند ثانیه برای مخاطب عام ایرانی کاملاً جا می‌اندازد.",
+  "وظیفه: لب کلام همین خبر را به فارسی روان و ساده بنویس.",
+  "قواعد طلایی:",
+  "۱) فقط بر اساس همین متن بنویس؛ هیچ نام، عدد، جزئیات یا ادعایی از خودت اضافه نکن، حاشیه نرو و ماجرا را تحریف نکن.",
+  "۲) لب کلام یعنی: چه اتفاقی افتاده، به دست چه کسی یا چه شرکتی، عدد یا تاریخ مهم، و چرا مهم است — فقط همین‌ها؛ نه توضیح اضافه، نه مقدمه، نه جمع‌بندی تکراری.",
+  "۳) فارسی کاملاً روان و ساده بنویس؛ از اصطلاح فنی پرهیز کن و اگر اصلاحی لازم شد همان لحظه در دل جمله با یک مقایسهٔ ساده توضیحش بده.",
+  "۴) ۲ تا ۳ جملهٔ کوتاه و مستقیم؛ حدود ۱۲۰ تا ۳۰۰ کاراکتر؛ بدون «طبق گزارش»، بدون سؤال، بدون ایموجی، بدون هشتگ، بدون عنوان.",
+  "۵) اسم مدل‌ها، شرکت‌ها و ابزارها را لاتین نگه‌دار (مثل GPT-5، Nvidia، Gemini).",
+  "۶) خروجی فقط متن لب کلام باشد؛ بدون هیچ توضیح اضافه."
+].join("\n");
+
+/* لب کلام را می‌سازد و در gistFa کش می‌کند — اولویت متریال: پست حرفه‌ایِ
+   آماده (simpleFa) ← متن کامل خبر ← توضیح کوتاه. اگر موتور جواب نداد
+   رشتهٔ خالی برمی‌گردد تا پست بدون لب کلام (فقط منبع+لینک) نرود. */
+function ensureGist(it) {
+  if (it.gistFa) return Promise.resolve(it.gistFa);
+  var material = (it.simpleFa || "").trim();
+  var prep;
+  if (material.length > 80) {
+    prep = Promise.resolve("خلاصهٔ حرفه‌ای آمادهٔ همین خبر:\n\n" + material);
+  } else {
+    prep = Promise.resolve()
+      .then(function () {
+        if (it.fullEn && it.fullEn.length > 250) return it.fullEn;
+        return fetchFullArticle(it).catch(function () { return ""; });
+      })
+      .then(function (full) {
+        if (full && full.length > 250) return "متن کامل خبر:\n\n" + full.slice(0, 6000);
+        if ((it.desc || "").length > 60) {
+          return "متن کامل خبر در دسترس نیست؛ فقط این توضیح کوتاه را داری:\nعنوان: " + it.title + "\nتوضیح: " + it.desc +
+            "\n\nبر اساس همی
