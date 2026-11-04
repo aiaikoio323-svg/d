@@ -1,0 +1,216 @@
+=============================================================== */
+var AUTO_CYCLE_MS = 30 * 60 * 1000;
+var AUTO_BATCH = 6;        // حداکثر ارسال در هر چرخه
+var AUTO_TRANSLATE = 24;   // حداکثر ترجمهٔ عنوان در هر چرخه
+
+var autoCyc = {
+  on: Store.get("pulse_auto_on", true),
+  busy: false,
+  last: Store.get("pulse_auto_last", 0),
+  lastMsg: Store.get("pulse_auto_msg", ""),
+  count: 0
+};
+
+function autoStatusFa() {
+  if (!autoCyc.on) return "چرخهٔ خودکار نیم‌ساعت خاموش است";
+  var nextMin = autoCyc.last
+    ? Math.max(0, Math.round((autoCyc.last + AUTO_CYCLE_MS - Date.now()) / 60000))
+    : 25;
+  var base = autoCyc.last
+    ? "آخرین چرخه: " + timeAgoFa(new Date(autoCyc.last).toISOString())
+    : "اولین چرخه به‌زودی";
+  return "🔄 " + base + (autoCyc.lastMsg ? " — " + autoCyc.lastMsg : "") +
+    " · بعدی: ~" + faDigits(nextMin) + " دقیقه" + (autoCyc.busy ? " — در حال اجرا…" : "");
+}
+
+function autoCycle() {
+  if (!autoCyc.on || autoCyc.busy || state.refreshing) return;
+  autoCyc.busy = true;
+  if (typeof UI !== "undefined" && UI.renderAutoStatus) UI.renderAutoStatus();
+  fetchAllSources().catch(function () { return []; })
+  .then(function (fresh) {
+    state.news = mergeNews(state.news, fresh);
+    persist();
+    if (typeof UI !== "undefined") UI.render();
+    // گام ۱ — ترجمهٔ خودکار عنوان‌های تازه
+    var needFa = state.news.filter(function (it) { return !it.titleFa; }).slice(0, AUTO_TRANSLATE);
+    return translateQueue(needFa, 60).then(function () {
+      state.news.forEach(function (it) { if (!it.category) it.category = heuristicCategory(it); });
+      persist();
+    });
+  })
+  .then(function () {
+    // گام ۲ — خلاصهٔ ساده + ارسال به بله (قدیمی‌ترین اول)
+    if (!bale.on || !(bale.token || "").trim() || !bale.chats.length) return null;
+    var now = Date.now();
+    var pending = state.news.filter(function (it) {
+      if (bale.sent[it.id] || it._baleGo) return false;
+      var age = (now - new Date(it.publishedAt).getTime()) / 3600000;
+      if (age > BALE_MAX_AGE_H || age < -2) { bale.sent[it.id] = now; return false; }
+      return true;
+    });
+    pending.reverse();
+    var batch = pending.slice(0, AUTO_BATCH);
+    var sent = 0;
+    var chain = Promise.resolve();
+    batch.forEach(function (it) {
+      chain = chain.then(function () {
+        it._baleGo = true;
+        return ensureBaleSummary(it).catch(function () { return ""; }).then(function () {
+          return ensureGist(it).then(function () {
+            return baleSendItem(it, bale.chats);
+          });
+        }).then(function (results) {
+          if (results.some(function (r) { return r.ok; })) {
+            bale.sent[it.id] = Date.now();
+            bale.sends++;
+            sent++;
+            bale.lastOk = Date.now();
+            bale.lastErr = "";
+          } else {
+            bale.lastErr = (results[0] && results[0].err) || "ارسال ناموفق بود";
+            it._baleGo = false; // released for the next cycle / tick
+          }
+          persistBale();
+          return new Promise(function (r) { setTimeout(r, 1200); });
+        });
+      });
+    });
+    return chain.then(function () {
+      autoCyc.count = sent;
+      autoCyc.lastMsg = sent
+        ? faDigits(sent) + " خبر جدید ترجمه/خلاصه و به بله ارسال شد"
+        : "خبر جدیدی برای ارسال نبود";
+      if (sent && typeof Http !== "undefined" && Http.toast) Http.toast("✓ چرخهٔ خودکار: " + autoCyc.lastMsg);
+      if (typeof UI !== "undefined" && UI.renderBaleStatus) UI.renderBaleStatus();
+    });
+  })
+  .catch(function (e) { autoCyc.lastMsg = "خطا: " + ((e && e.message) || "نامشخص"); })
+  .then(function () {
+    autoCyc.busy = false;
+    autoCyc.last = Date.now();
+    Store.set("pulse_auto_last", autoCyc.last);
+    Store.set("pulse_auto_msg", autoCyc.lastMsg);
+    if (typeof UI !== "undefined" && UI.renderAutoStatus) UI.renderAutoStatus();
+  });
+}
+
+function startAutoCycle() {
+  setInterval(autoCycle, AUTO_CYCLE_MS);
+  setTimeout(autoCycle, 25000); // اولین چرخه کمی بعد از راه‌اندازی
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && autoCyc.on && !autoCyc.busy && Date.now() - autoCyc.last > AUTO_CYCLE_MS) {
+      setTimeout(autoCycle, 2000);
+    }
+  });
+}
+
+/* ================================================================
+   v3.6 — بروزرسانی هوشمند روزانهٔ کاتالوگ منابع رایگان
+   هر روز یک‌بار هوش مصنوعی، کاتالوگ را با تازه‌ترین وضعیت دنیای AI
+   مقایسه می‌کند: منبع تازه اضافه، اطلاعات کهنه اصلاح، و منبعی که
+   در بررسی پیدا نشود با نشان «ممکن است دیگر فعال نباشد» جدا می‌شود.
+   ================================================================ */
+var RES_STORE_ITEMS = "pulse_res_items";
+var RES_STORE_T = "pulse_res_t";
+var RES_STORE_DAY = "pulse_res_day";
+var RES_BADGE_MS = 3 * 86400000; // نشان «جدید/بروزرسانی شد» تا ۳ روز می‌ماند
+
+var RES = {
+  cats: FREE_AI_CATS,
+  items: [],
+  byKey: {},
+  top: FREE_AI_TOP,
+  t: Store.get(RES_STORE_T, 0),
+  day: Store.get(RES_STORE_DAY, ""),
+  busy: false,
+  err: "",
+  note: "",
+  added: 0,
+  _triggered: false
+};
+
+function resLoad() {
+  var saved = Store.get(RES_STORE_ITEMS, null);
+  if (Object.prototype.toString.call(saved) === "[object Array]" && saved.length >= 10) {
+    RES.items = saved;
+  } else {
+    RES.items = FREE_AI_ITEMS.map(function (x) { return Object.assign({}, x); });
+  }
+  resIndex();
+}
+
+function resIndex() {
+  RES.byKey = {};
+  RES.items.forEach(function (x) { RES.byKey[x.key] = x; });
+  var alive = RES.items.filter(function (x) { return !x._gone; });
+  var withG = alive.filter(function (x) { return x.grank; });
+  if (withG.length >= 5) {
+    withG.sort(function (a, b) { return a.grank - b.grank; });
+    RES.top = withG.slice(0, 5).map(function (x) { return x.key; });
+  }
+}
+
+function resSave() {
+  Store.set(RES_STORE_ITEMS, RES.items);
+  Store.set(RES_STORE_T, RES.t);
+  Store.set(RES_STORE_DAY, RES.day);
+}
+
+function resSaveItems() { Store.set(RES_STORE_ITEMS, RES.items); }
+
+/* ---------- ① پرامپت سردبیر ارشد کاتالوگ ---------- */
+var RES_SYSTEM = [
+  "ROLE — You are the Senior Catalog Curator of the Persian AI-news app «پالس هوش مصنوعی». You maintain its flagship catalog: the world's most powerful and genuinely FREE AI resources (model APIs & chatbots, image/video/audio tools, search & data APIs, agent & automation platforms, AI coding tools).",
+  "",
+  "TASK — Today is {date}. Audit the CURRENT CATALOG given in the user message against your latest knowledge, then return the UPDATED catalog.",
+  "",
+  "HARD RULES",
+  "1. Only real, currently active, well-known services with a genuinely free tier (free plan, free daily/monthly quota, or keyless free API). No trials-only services, no credit-card-required ones, no dead or deprecated services, no rumors, no invented names.",
+  "2. If a listed service has shut down, gone paid-only, or become untrustworthy — OMIT it from your output (omission = removal).",
+  "3. If a stronger free resource emerged recently (new model releases, new free tiers, new free tools) — ADD it.",
+  "4. Fix stale facts: updated model names/versions, changed quotas, renamed products. Keep product/model/company names in Latin exactly (Gemini 2.5 Flash, Llama 4, GLM-4.6, Groq, z.ai ...).",
+  "5. Categories stay fixed: \"chat\" = LLM APIs & chatbots, \"media\" = image/video/audio generation, \"search\" = search & data APIs, \"agents\" = agent & automation platforms, \"code\" = AI coding tools & editors.",
+  "6. Keep the \"key\" field of existing items unchanged. For brand-new items choose a short latin slug as key.",
+  "7. grank = global value ranking across the whole catalog, 1 = the most valuable free AI resource in the world right now. Be opinionated, current and strict.",
+  "",
+  "OUTPUT FORMAT — STRICT",
+  "Return ONLY one valid JSON array. No markdown fences, no comments, no text before or after it. One object per resource, exactly this schema with keys in this order:",
+  "{\"key\":\"groq\",\"cat\":\"chat\",\"grank\":1,\"emoji\":\"⚡\",\"name\":\"Groq\",\"host\":\"groq.com\",\"tag\":\"\",\"fa\":\"...\",\"site\":\"https://groq.com\",\"api\":\"https://console.groq.com/keys\",\"apilabel\":\"کلید رایگان\"}",
+  "",
+  "FIELD RULES",
+  "- 24 to 30 items total; every category covered (at least 3 items each).",
+  "- fa: fluent, simple, friendly conversational Persian (زبان ساده و روان فارسی), 25-45 words: what it is + what exactly is free + who benefits. No hype, no exact quota numbers unless 100% certain. Keep tool/model names Latin inside the Persian text.",
+  "- tag: optional short Persian label, max 4 words (like «در این اپ فعال» or «سریع‌ترین اینفرنس»), else empty string.",
+  "- emoji: one fitting emoji character.",
+  "- api: URL of the free API-key page when one exists, else empty string. apilabel: «کلید رایگان» or «مستندات» or «توکن رایگان» accordingly, else empty string.",
+  "- host: bare domain like \"groq.com\".",
+  "- Do not change a service's category unless it truly belongs elsewhere now."
+].join("\n");
+
+function resCompact(x) {
+  var o = { key: x.key, cat: x.cat, grank: x.grank || undefined, emoji: x.emoji, name: x.name, host: x.host || "", fa: x.fa, site: x.site };
+  if (x.tag) o.tag = x.tag;
+  if (x.api) { o.api = x.api; o.apilabel = x.apilabel || ""; }
+  return o;
+}
+
+function resSlug(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "res-" + Date.now();
+}
+
+function resCatColor(cat) {
+  var c = FREE_AI_CATS.find(function (x) { return x.key === cat; });
+  return c ? c.color : "#2563EB";
+}
+
+/* ---------- ② اعتبارسنجی سخت‌گیرانهٔ خروجی AI ---------- */
+function resValidate(raw) {
+  var arr = extractJsonArray(raw);
+  if (Object.prototype.toString.call(arr) !== "[object Array]") throw new Error("nojson");
+  var out = [], seen = {};
+  arr.forEach(function (o, i) {
+    try {
+      if (!o || typeof o.name !== "string" || typeof o.fa !== "string") return;
+      var name = o.name.trim(), fa = o.fa.trim();
+      if (name.length < 2 || name.length > 70 || fa.length < 40 || fa.le
