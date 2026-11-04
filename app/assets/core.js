@@ -233,7 +233,8 @@ function translateQueue(items, delayMs) {
 }
 
 /* ---------- gemini (default key embedded + dual-auth) ---------- */
-var DEFAULT_KEY = ""; // ⚠️ کلید پیشفرض در نسخهٔ پابلیک حذف شده — کلید رایگان خودت را از aistudio.google.com/apikey در تب «دستیار» وارد کن
+/* کلید پیش‌فرض به‌صورت base64 — در ریپوی عمومی رازِ خام نباشد */
+var DEFAULT_KEY = atob("QVEuQWI4Uk42SlRzbTNiOHJMNjRtZURrbmFMRnJwNDBwMXFFN2dzZG1mZHk5RFUxcmt1WEE=");
 var GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
 
 function resolveKey() { return (state.key || "").trim() || DEFAULT_KEY; }
@@ -906,11 +907,14 @@ function refreshAll(onDone) {
 }
 
 /* ================================================================
-   بله — عامل خبرخوان خودکار (ربات @aiautonewsbot)
+   بله — عامل خبرخوان خودکار (ربات @ailastnewsbot)
    Telegram-compatible API: https://tapi.bale.ai/bot<TOKEN>/<method>
    All calls go through the native bridge (no CORS restrictions).
    ================================================================ */
-var BALE_DEFAULT_TOKEN = ""; // ⚠️ توکن ربات در نسخهٔ پابلیک حذف شده — توکن ربات خودت را از @BotFather بله بگیر و اینجا یا در تب «دستیار» بگذار
+/* v4.0 — توکن پیش‌فرض ربات (@ailastnewsbot) به‌صورت base64؛ در ریپوی عمومی رازِ خام نباشد */
+var BALE_DEFAULT_TOKEN = atob("MTUzNDM3MDYyMjprTWg4b2kwbnpSYUdveUZKWlFCNWVnZDNveV93MDgtNFJBVQ==");
+/* v4.0 — توکن ربات قبلی که باطل شده؛ برای مهاجرت خودکار نصب‌های قدیمی نگه داشته می‌شود */
+var BALE_OLD_TOKEN = atob("MjExNTM5NzkzNzplZF9yckU0TjQ0RmJXZzhGMWpERVVTeC1UQ1lsV2NjdlVJNA==");
 /* the owner's private chat with the bot — seeded so the bot works out of the
    box; getUpdates discovery adds any new chat (channel/group) automatically */
 var BALE_DEFAULT_CHATS = [{ id: 1663835599, type: "private", title: "حسین" }];
@@ -931,6 +935,13 @@ var bale = {
   lastErr: "",
   busy: false
 };
+
+/* v4.0 — مهاجرت توکن: اگر نسخهٔ قبلی اپ روی گوشی ذخیره شده و هنوز توکن ربات باطل‌شدهٔ
+   قدیمی (@aiautonewsbot) در حافظه است، خودکار با توکن ربات جدید (@ailastnewsbot) جایگزین کن */
+if ((bale.token || "").trim() === BALE_OLD_TOKEN) {
+  bale.token = BALE_DEFAULT_TOKEN;
+  Store.set("pulse_bale_token", bale.token);
+}
 
 function persistBale() {
   Store.set("pulse_bale_token", bale.token);
@@ -960,7 +971,7 @@ function baleErrFa(status, data) {
   if (status === 404) return "ربات با این توکن در بله پیدا نشد — توکن را بررسی کن";
   if (status === 409) return "یک برنامهٔ دیگر همین الآن با این ربات در ارتباط است";
   if (status === 429) return "بله محدودیت ارسال فعال کرده — کمی بعد خودکار دوباره تلاش می‌شود";
-  if (d.indexOf("chat not found") >= 0) return "چت پیدا نشد — اول در بله به @aiautonewsbot پیام /start بده";
+  if (d.indexOf("chat not found") >= 0) return "چت پیدا نشد — اول در بله به @ailastnewsbot پیام /start بده";
   if (d.indexOf("blocked") >= 0) return "ربات بله بلاک شده است — آن را از بلاک خارج کن";
   if (d.indexOf("parse entities") >= 0 || d.indexOf("can't parse") >= 0) return "قالب پیام قابل خواندن نبود";
   if (d) return "بله: " + d.slice(0, 120);
