@@ -479,8 +479,21 @@
   "https://www.theguardian.com/world/2026/nov/12/thursday-briefing-what-we-do-and-dont-know-about-alice-huang-and-the-nvidia-affair": 1794469603067,
   "t#1hc45t9": 1794469603067,
   "https://www.unite.ai/chinese-ai-firms-seek-overseas-nvidia-capacity-amid-export-control-fears/": 1794469672911,
-  "t#1uneys7": 1794469672911
+  "t#1uneys7": 1794469672911,
+  "https://aws.amazon.com/blogs/machine-learning/migrate-to-amazon-bedrock-managed-knowledge-base-with-your-coding-agent/": 1794500386732,
+  "t#zlvm7b": 1794500386732,
+  "https://aws.amazon.com/blogs/machine-learning/fine-grained-access-control-for-amazon-bedrock-managed-knowledge-base-tools/": 1794500386732,
+  "t#ecei50": 1794500386732,
+  "https://techcrunch.com/2026/11/12/trump-floats-apple-chairman-tim-cook-as-jensen-huangs-successor/": 1794500492452,
+  "t#1q55cnc": 1794500492452,
+  "https://x.com/ElonMusk/status/2120912138772369758": 1794500545061,
+  "https://www.unite.ai/polar-light-technologies-signs-foxconn-deal-for-microled-optical-links/": 1794500560076,
+  "t#6qbeuv": 1794500560076,
+  "https://www.reddit.com/r/MachineLearning/comments/1xugl6c/what_if_neurips_icml_and_iclr_capped_accepted/": 1794500626362,
+  "t#1vvg00c": 1794500626362,
+  "https://www.extremetech.com/computing/nvidia-may-have-canceled-its-unannounced-rtx-5080-24gb": 1794500667425,
+  "t#m9w01u": 1794500667425
  },
- "totalSent": 220,
- "lastRun": 1794469673411
+ "totalSent": 226,
+ "lastRun": 1794500667926
 }
